@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 from PySide6.QtCore import Qt, QThread, Signal, QDate, QDateTime
-from PySide6.QtGui import QFont, QPainter, QPen, QColor, QBrush
+from PySide6.QtGui import QFont, QPen, QColor, QBrush
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
     QLabel, QPushButton, QSpinBox, QDoubleSpinBox, QDateEdit,
@@ -621,12 +621,15 @@ class MainWindow(QMainWindow):
         v.setSpacing(8)
 
         # Chart (QtCharts — keine matplotlib-DLLs noetig)
+        # _series_refs haelt Python-Referenzen auf alle QLineSeries / QAreaSeries
+        # die aktuell im Chart leben. Ohne diese Refs sammelt der Python-GC die
+        # Series ein, waehrend Qt sie noch rendert -> Access Violation 0xC0000005.
+        self._series_refs: list = []
         self.chart = QChart()
         self.chart.setTitle("Equity Curve")
         self.chart.legend().hide()
         self.chart.setAnimationOptions(QChart.AnimationOption.NoAnimation)
         self.chart_view = QChartView(self.chart)
-        self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         v.addWidget(self.chart_view, 1)
 
         # Slider für Anzeige-Enddatum
@@ -740,13 +743,19 @@ class MainWindow(QMainWindow):
         start_val = self.last_result.portfolio_value
         self.slider_label.setText(eq.index[-1].strftime("%Y-%m-%d"))
 
-        # Chart neu aufbauen (alte Series + Axen entfernen)
-        self.chart.removeAllSeries()
-        for axis in list(self.chart.axes()):
-            self.chart.removeAxis(axis)
-
         xs = [int(ts.timestamp() * 1000) for ts in eq.index]
         ys = [float(v) for v in eq.values]
+
+        # Komplett neues QChart-Objekt bauen statt das alte zu cleanen.
+        # PySide6 + QtCharts hat einen Ownership-Bug bei removeAllSeries() in
+        # Kombination mit QAreaSeries -> Access Violation 0xC0000005 beim Repaint.
+        new_chart = QChart()
+        new_chart.legend().hide()
+        new_chart.setAnimationOptions(QChart.AnimationOption.NoAnimation)
+        new_chart.setTitle(
+            f"Equity Curve — Kauf am {self.last_result.buy_date.date()}, "
+            f"{len(self.last_result.top_tickers)} Aktien, Formel:  {self.last_result.formula}"
+        )
 
         # Equity-Linie
         equity_line = QLineSeries()
@@ -787,14 +796,14 @@ class MainWindow(QMainWindow):
 
         # Reihenfolge bestimmt Z-Order: Flaechen zuerst, Linien drueber
         for s in (green_area, red_area, baseline_line, equity_line):
-            self.chart.addSeries(s)
+            new_chart.addSeries(s)
 
         # Achsen
         x_axis = QDateTimeAxis()
         x_axis.setFormat("yyyy-MM")
         x_axis.setMin(QDateTime.fromMSecsSinceEpoch(xs[0]))
         x_axis.setMax(QDateTime.fromMSecsSinceEpoch(xs[-1]))
-        self.chart.addAxis(x_axis, Qt.AlignmentFlag.AlignBottom)
+        new_chart.addAxis(x_axis, Qt.AlignmentFlag.AlignBottom)
 
         y_axis = QValueAxis()
         y_axis.setTitleText("Portfoliowert ($)")
@@ -803,16 +812,28 @@ class MainWindow(QMainWindow):
         y_max = max(max(ys), start_val)
         pad = max(1.0, (y_max - y_min) * 0.05)
         y_axis.setRange(y_min - pad, y_max + pad)
-        self.chart.addAxis(y_axis, Qt.AlignmentFlag.AlignLeft)
+        new_chart.addAxis(y_axis, Qt.AlignmentFlag.AlignLeft)
 
         for s in (green_area, red_area, baseline_line, equity_line):
             s.attachAxis(x_axis)
             s.attachAxis(y_axis)
 
-        self.chart.setTitle(
-            f"Equity Curve — Kauf am {self.last_result.buy_date.date()}, "
-            f"{len(self.last_result.top_tickers)} Aktien, Formel:  {self.last_result.formula}"
-        )
+        # Python-Refs auf alle Series halten, sonst raeumt der GC sie ab,
+        # waehrend Qt sie noch rendert (insbesondere die upper/lower-Linien
+        # innerhalb der QAreaSeries -> Access Violation).
+        self._series_refs = [
+            equity_line, baseline_line,
+            green_upper, green_lower, red_upper, red_lower,
+            green_area, red_area,
+            x_axis, y_axis,
+        ]
+
+        # Altes Chart wegwerfen, neues anhaengen. setChart() uebernimmt das
+        # neue Chart, das alte wird vom QChartView freigegeben.
+        old_chart = self.chart
+        self.chart = new_chart
+        self.chart_view.setChart(new_chart)
+        old_chart.deleteLater()
 
         # Stats
         end_val = float(eq.iloc[-1])
