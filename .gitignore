@@ -1,0 +1,23 @@
+# Entpackte DB (wird beim ersten Start aus den .xz-Chunks erzeugt)
+market_data.db
+market_data.db.tmp
+
+# Vollständiges .xz (>100 MB, daher als Chunks committed). Lokal als Cache OK.
+market_data.db.xz
+market_data.db.xz.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE / Tools
+.vscode/
+.idea/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
