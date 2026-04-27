@@ -345,12 +345,28 @@ def run_backtest(
 
     if progress_cb:
         progress_cb("Werte Formel aus…")
-    signals = evaluate_formula(indicators, formula)
-    signals = signals.replace([np.inf, -np.inf], np.nan).dropna()
+    raw_signals = evaluate_formula(indicators, formula)
+    signals = raw_signals.replace([np.inf, -np.inf], np.nan).dropna()
 
     if len(signals) < n_stocks:
+        # Diagnose: welche Variablen sind hauptverantwortlich für NaNs?
+        import re
+        used = sorted(set(re.findall(r"\b([a-zA-Z_]\w*)\b", formula)) & set(indicators.columns))
+        nan_share = {col: float(indicators[col].isna().mean()) for col in used}
+        worst = sorted(nan_share.items(), key=lambda kv: -kv[1])[:3]
+        worst_txt = ", ".join(f"{c}: {p*100:.0f}% NaN" for c, p in worst) or "—"
+
+        hint = ""
+        if any(c in used for c in ("ret_252d", "sma_200", "high_52w", "low_52w", "dist_from_high")):
+            hint = (
+                "\n\nHinweis: Die Formel nutzt langfristige Indikatoren "
+                "(ret_252d / sma_200 / high_52w …). Diese brauchen ~252 Handelstage "
+                "Historie vor dem Startdatum. DB beginnt 2021-03-26, frühestes "
+                "sinnvolles Startdatum ist etwa 2022-04-05."
+            )
         raise ValueError(
-            f"Nur {len(signals)} gültige Signal-Werte vorhanden, brauche {n_stocks}."
+            f"Nur {len(signals)} gültige Signal-Werte vorhanden, brauche {n_stocks}.\n"
+            f"NaN-Anteile (Top 3): {worst_txt}{hint}"
         )
 
     top = signals.nlargest(n_stocks)
@@ -484,10 +500,13 @@ class MainWindow(QMainWindow):
         cfg_box = QGroupBox("Konfiguration")
         cfg = QFormLayout(cfg_box)
 
-        self.start_date = QDateEdit(QDate(2022, 1, 3))
+        # DB beginnt 2021-03-26. ret_252d braucht 252 Handelstage Vorlauf,
+        # frühester sinnvoller Start ist daher ~2022-04-05. Default deutlich
+        # später, damit alle Indikatoren stabil verfügbar sind.
+        self.start_date = QDateEdit(QDate(2023, 1, 3))
         self.start_date.setCalendarPopup(True)
         self.start_date.setDisplayFormat("yyyy-MM-dd")
-        self.start_date.setMinimumDate(QDate(2021, 4, 1))
+        self.start_date.setMinimumDate(QDate(2021, 9, 1))
         self.start_date.setMaximumDate(QDate(2026, 4, 24))
         cfg.addRow("Startdatum:", self.start_date)
 
