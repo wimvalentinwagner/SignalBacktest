@@ -15,19 +15,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from PySide6.QtCore import Qt, QThread, Signal, QDate
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QThread, Signal, QDate, QDateTime
+from PySide6.QtGui import QFont, QPainter, QPen, QColor, QBrush
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
     QLabel, QPushButton, QSpinBox, QDoubleSpinBox, QDateEdit,
     QComboBox, QListWidget, QListWidgetItem, QTextEdit, QSlider, QStatusBar,
     QMessageBox, QSplitter, QGroupBox, QFormLayout, QSizePolicy,
 )
-
-import matplotlib
-matplotlib.use("QtAgg")
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
+from PySide6.QtCharts import (
+    QChart, QChartView, QLineSeries, QValueAxis, QDateTimeAxis, QAreaSeries,
+)
 
 
 DB_PATH = Path(__file__).resolve().parent / "market_data.db"
@@ -603,14 +601,14 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(panel)
         v.setSpacing(8)
 
-        # Chart
-        self.figure = Figure(figsize=(8, 5))
-        self.figure.set_tight_layout(True)
-        self.canvas = FigureCanvas(self.figure)
-        self.ax = self.figure.add_subplot(111)
-        self.ax.set_title("Equity Curve")
-        self.ax.grid(True, alpha=0.3)
-        v.addWidget(self.canvas, 1)
+        # Chart (QtCharts — keine matplotlib-DLLs noetig)
+        self.chart = QChart()
+        self.chart.setTitle("Equity Curve")
+        self.chart.legend().hide()
+        self.chart.setAnimationOptions(QChart.AnimationOption.NoAnimation)
+        self.chart_view = QChartView(self.chart)
+        self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        v.addWidget(self.chart_view, 1)
 
         # Slider für Anzeige-Enddatum
         slider_box = QGroupBox("Anzeige-Enddatum  (verschieben um Performance-Verlauf zu trimmen)")
@@ -723,25 +721,79 @@ class MainWindow(QMainWindow):
         start_val = self.last_result.portfolio_value
         self.slider_label.setText(eq.index[-1].strftime("%Y-%m-%d"))
 
-        self.ax.clear()
-        self.ax.plot(eq.index, eq.values, color="#1f77b4", linewidth=1.6)
-        self.ax.fill_between(
-            eq.index, start_val, eq.values,
-            where=(eq.values >= start_val), alpha=0.18, color="#2ca02c", interpolate=True,
-        )
-        self.ax.fill_between(
-            eq.index, start_val, eq.values,
-            where=(eq.values < start_val), alpha=0.18, color="#d62728", interpolate=True,
-        )
-        self.ax.axhline(start_val, color="gray", linestyle="--", alpha=0.6, linewidth=0.9)
-        self.ax.set_title(
+        # Chart neu aufbauen (alte Series + Axen entfernen)
+        self.chart.removeAllSeries()
+        for axis in list(self.chart.axes()):
+            self.chart.removeAxis(axis)
+
+        xs = [int(ts.timestamp() * 1000) for ts in eq.index]
+        ys = [float(v) for v in eq.values]
+
+        # Equity-Linie
+        equity_line = QLineSeries()
+        for x, y in zip(xs, ys):
+            equity_line.append(x, y)
+        pen = QPen(QColor("#1f77b4"))
+        pen.setWidthF(1.6)
+        equity_line.setPen(pen)
+
+        # Baseline (gestrichelt, horizontal bei start_val)
+        baseline_line = QLineSeries()
+        baseline_line.append(xs[0], start_val)
+        baseline_line.append(xs[-1], start_val)
+        baseline_pen = QPen(QColor(120, 120, 120))
+        baseline_pen.setStyle(Qt.PenStyle.DashLine)
+        baseline_pen.setWidthF(0.9)
+        baseline_line.setPen(baseline_pen)
+
+        # Gruene Flaeche oberhalb der Baseline (upper = max(equity, baseline)),
+        # rote Flaeche unterhalb (lower = min(equity, baseline))
+        green_upper = QLineSeries()
+        green_lower = QLineSeries()
+        red_upper = QLineSeries()
+        red_lower = QLineSeries()
+        for x, y in zip(xs, ys):
+            green_upper.append(x, max(y, start_val))
+            green_lower.append(x, start_val)
+            red_upper.append(x, start_val)
+            red_lower.append(x, min(y, start_val))
+
+        green_area = QAreaSeries(green_upper, green_lower)
+        green_area.setBrush(QBrush(QColor(44, 160, 44, 46)))   # alpha ~18%
+        green_area.setPen(QPen(Qt.PenStyle.NoPen))
+
+        red_area = QAreaSeries(red_upper, red_lower)
+        red_area.setBrush(QBrush(QColor(214, 39, 40, 46)))
+        red_area.setPen(QPen(Qt.PenStyle.NoPen))
+
+        # Reihenfolge bestimmt Z-Order: Flaechen zuerst, Linien drueber
+        for s in (green_area, red_area, baseline_line, equity_line):
+            self.chart.addSeries(s)
+
+        # Achsen
+        x_axis = QDateTimeAxis()
+        x_axis.setFormat("yyyy-MM")
+        x_axis.setMin(QDateTime.fromMSecsSinceEpoch(xs[0]))
+        x_axis.setMax(QDateTime.fromMSecsSinceEpoch(xs[-1]))
+        self.chart.addAxis(x_axis, Qt.AlignmentFlag.AlignBottom)
+
+        y_axis = QValueAxis()
+        y_axis.setTitleText("Portfoliowert ($)")
+        y_axis.setLabelFormat("%.0f")
+        y_min = min(min(ys), start_val)
+        y_max = max(max(ys), start_val)
+        pad = max(1.0, (y_max - y_min) * 0.05)
+        y_axis.setRange(y_min - pad, y_max + pad)
+        self.chart.addAxis(y_axis, Qt.AlignmentFlag.AlignLeft)
+
+        for s in (green_area, red_area, baseline_line, equity_line):
+            s.attachAxis(x_axis)
+            s.attachAxis(y_axis)
+
+        self.chart.setTitle(
             f"Equity Curve — Kauf am {self.last_result.buy_date.date()}, "
             f"{len(self.last_result.top_tickers)} Aktien, Formel:  {self.last_result.formula}"
         )
-        self.ax.set_ylabel("Portfoliowert ($)")
-        self.ax.grid(True, alpha=0.3)
-        self.figure.autofmt_xdate()
-        self.canvas.draw_idle()
 
         # Stats
         end_val = float(eq.iloc[-1])

@@ -54,8 +54,8 @@ if not exist "%PY%" (
 
 REM === 3) Pakete pruefen / installieren ===
 echo.
-echo [3/4] Pruefe Pakete ^(PySide6, pandas, numpy, matplotlib^) ...
-"%PY%" -c "import PySide6, pandas, numpy, matplotlib" >nul 2>nul
+echo [3/4] Pruefe Pakete ^(PySide6, pandas, numpy^) ...
+"%PY%" -c "import PySide6, pandas, numpy; from PySide6.QtCharts import QChart" >nul 2>nul
 if errorlevel 1 (
     echo        Installiere/aktualisiere Pakete ^(einmalig, dauert 1-3 Minuten^) ...
     "%PY%" -m pip install --upgrade pip
@@ -65,7 +65,7 @@ if errorlevel 1 (
         echo [FEHLER] Paketinstallation fehlgeschlagen. Internetverbindung pruefen.
         goto :end
     )
-    "%PY%" -c "import PySide6, pandas, numpy, matplotlib" >nul 2>nul
+    "%PY%" -c "import PySide6, pandas, numpy; from PySide6.QtCharts import QChart" >nul 2>nul
     if errorlevel 1 goto :rebuild_venv
 ) else (
     echo        Alle Pakete vorhanden.
@@ -81,7 +81,7 @@ echo.
 "%PY%" -c "import numpy; print('  numpy OK', numpy.__version__)" 2>&1
 "%PY%" -c "import pandas; print('  pandas OK', pandas.__version__)" 2>&1
 "%PY%" -c "import PySide6; print('  PySide6 OK', PySide6.__version__)" 2>&1
-"%PY%" -c "import matplotlib; print('  matplotlib OK', matplotlib.__version__)" 2>&1
+"%PY%" -c "from PySide6.QtCharts import QChart; print('  QtCharts OK')" 2>&1
 echo.
 echo [REPAIR] Loesche .venv und installiere von Null ...
 rmdir /s /q .venv
@@ -101,14 +101,41 @@ if errorlevel 1 (
     echo [FEHLER] Paketinstallation in neuer .venv fehlgeschlagen.
     goto :end
 )
-"%PY%" -c "import PySide6, pandas, numpy, matplotlib"
+"%PY%" -c "import PySide6, pandas, numpy; from PySide6.QtCharts import QChart" 2> "%TEMP%\sb_imp.err"
 if errorlevel 1 (
     echo.
+    type "%TEMP%\sb_imp.err"
+    findstr /c:"Anwendungssteuerungsrichtlinie" /c:"Application Control" "%TEMP%\sb_imp.err" >nul 2>nul
+    if not errorlevel 1 (
+        echo.
+        echo === Smart App Control / WDAC blockiert ungesignete DLLs ===
+        echo Eine pip-DLL ist nicht von einem fuer SAC vertrauenswuerdigen
+        echo Herausgeber signiert und wird deshalb blockiert.
+        echo.
+        echo Privates Notebook ^(Win 11^):
+        echo   1. Windows-Sicherheit oeffnen
+        echo   2. App- und Browsersteuerung ^> Smart App Control-Einstellungen
+        echo   3. Auf "Aus" stellen, Neustart, run.bat erneut starten.
+        echo   ^(Nach dem Aus laesst sich SAC nur durch Windows-Neuinstallation
+        echo    wieder einschalten.^)
+        echo.
+        echo Firmen-Notebook ^(WDAC^): IT muss .pyd-Dateien aus .venv whitelisten,
+        echo oder das Projekt unter WSL2 ^(Ubuntu^) ausfuehren.
+        del "%TEMP%\sb_imp.err" 2>nul
+        goto :end
+    )
+    findstr /c:"DLL load failed" "%TEMP%\sb_imp.err" >nul 2>nul
+    if not errorlevel 1 (
+        echo.
+        echo Hinweis: Microsoft Visual C++ Redistributable installieren:
+        echo https://aka.ms/vs/17/release/vc_redist.x64.exe
+    )
+    del "%TEMP%\sb_imp.err" 2>nul
+    echo.
     echo [FEHLER] Auch nach Neuaufbau schlagen Imports fehl.
-    echo Falls "DLL load failed": Microsoft Visual C++ Redistributable installieren:
-    echo https://aka.ms/vs/17/release/vc_redist.x64.exe
     goto :end
 )
+del "%TEMP%\sb_imp.err" 2>nul
 
 :run_app
 echo.
